@@ -1,7 +1,7 @@
 # JSONT
 [![GoDoc](https://godoc.org/github.com/go-andiamo/jsont?status.svg)](https://pkg.go.dev/github.com/go-andiamo/jsont)
 [![Latest Version](https://img.shields.io/github/v/tag/go-andiamo/jsont.svg?sort=semver&style=flat&label=version&color=blue)](https://github.com/go-andiamo/jsont/releases)
-[![codecov](https://codecov.io/gh/go-andiamo/jsont/branch/master/graph/badge.svg)](https://codecov.io/gh/go-andiamo/jsont)
+[![codecov](https://codecov.io/gh/go-andiamo/jsont/branch/main/graph/badge.svg?token=V4XVYR0A8G)](https://codecov.io/gh/go-andiamo/jsont)
 
 A really simple JSON templating utility...
 
