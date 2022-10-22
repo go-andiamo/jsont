@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// JsonNamedTemplate is a JSON template with named args
-type JsonNamedTemplate interface {
+// NamedTemplate is a JSON template with named args
+type NamedTemplate interface {
 	// String produces a JSON string from the template using the specified args
 	//
 	// If a named arg are missing from the supplied args:
@@ -38,16 +38,14 @@ type JsonNamedTemplate interface {
 	// default value for that named arg
 	ExpectedArgs() map[string]bool
 	// DefaultArgValue provides a default value for a specific named arg
-	DefaultArgValue(argName string, value interface{}) JsonNamedTemplate
+	DefaultArgValue(argName string, value interface{}) NamedTemplate
 	// DefaultArgValues provides default values for the specified named args
-	DefaultArgValues(defaults map[string]interface{}) JsonNamedTemplate
+	DefaultArgValues(defaults map[string]interface{}) NamedTemplate
 	// NewWith creates a new template with the args supplied being resolved in the new template
 	//
 	// Note: when resolving args into the new template, defaults are NOT used (but are copied over to the new)
-	NewWith(args map[string]interface{}) (JsonNamedTemplate, error)
-	// Strict makes the template strict - i.e. when generating String or Data, if any of the named args are not supplied an
-	// error is returned
-	Strict() JsonNamedTemplate
+	NewWith(args map[string]interface{}) (NamedTemplate, error)
+	Options(options ...Option) NamedTemplate
 }
 
 type jsonNamedTemplate struct {
@@ -55,57 +53,69 @@ type jsonNamedTemplate struct {
 	tokens           tokens
 	fixedLens        int
 	strict           bool
+	checkReqd        bool
 	defaultArgValues map[string]interface{}
 	// used only during parsing...
 	lastTokenStart int
 }
 
-// NewJsonNamedTemplate creates a new JSON template from a template string
+// NewNamedTemplate creates a new JSON template from a template string
 //
 // The template string can be any JSON with arg positions specified by '?'
 //
 // To escape a '?' in the template, use '??'
 //
 // Example:
-//   jt, _ := NewJsonNamedTemplate(`{"foo":?foo,"bar":?bar,"baz":"??","qux":?qux}`)
+//   jt, _ := NewNamedTemplate(`{"foo":?foo,"bar":?bar,"baz":"??","qux":?qux}`)
 //   println(jt.String(map[string]interface{}{"foo":"aaa", "bar":true, "qux":1.2}))
 // would produce:
 //   {"foo":"aaa","bar":true,"baz":"?","qux":1.2}
-func NewJsonNamedTemplate(template string) (JsonNamedTemplate, error) {
+func NewNamedTemplate(template string, options ...Option) (NamedTemplate, error) {
 	result := &jsonNamedTemplate{
 		argNames:         map[string]bool{},
 		tokens:           make([]jsonTemplateToken, 0),
 		defaultArgValues: map[string]interface{}{},
+		strict:           true,
 	}
 	if err := result.parse(template); err != nil {
 		return nil, err
 	}
-	// test it...
-	tArgs := map[string]interface{}{}
-	for k := range result.argNames {
-		tArgs[k] = nil
+	if err := result.applyOptions(options, false); err != nil {
+		return nil, err
 	}
-	tData, _ := result.Data(tArgs)
-	var v interface{}
-	if err := json.Unmarshal(tData, &v); err != nil {
+	if err := result.check(); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func MustCompileJsonNamedTemplate(template string) JsonNamedTemplate {
-	if jt, err := NewJsonNamedTemplate(template); err == nil {
+// MustCompileNamedTemplate is the same as NewNamedTemplate, except it panics if there is an error
+func MustCompileNamedTemplate(template string, options ...Option) NamedTemplate {
+	if jt, err := NewNamedTemplate(template, options...); err == nil {
 		return jt
 	} else {
-		panic(err.Error())
+		panic(any(err))
 	}
 }
 
-// Strict makes the template strict - i.e. when generating String or Data, if any of the named args are not supplied an
-// error is returned
-func (t *jsonNamedTemplate) Strict() JsonNamedTemplate {
-	t.strict = true
+// Options applies the specified options to the template
+//
+// Note: unlike using options with NewNamedTemplate and MustCompileNamedTemplate, this method
+// does not panic or error if any of the options are not applicable to this type
+func (t *jsonNamedTemplate) Options(options ...Option) NamedTemplate {
+	_ = t.applyOptions(options, true)
 	return t
+}
+
+func (t *jsonNamedTemplate) applyOptions(options []Option, ignoreErrs bool) error {
+	for _, o := range options {
+		if o != nil {
+			if err := o.Apply(t); err != nil && !ignoreErrs {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // String produces a JSON string from the template using the specified args
@@ -175,7 +185,7 @@ func (t jsonNamedTemplate) ExpectedArgs() map[string]bool {
 // NewWith creates a new template with the args supplied being resolved in the new template
 //
 // Note: when resolving args into the new template, defaults are NOT used (but are copied over to the new)
-func (t *jsonNamedTemplate) NewWith(args map[string]interface{}) (JsonNamedTemplate, error) {
+func (t *jsonNamedTemplate) NewWith(args map[string]interface{}) (NamedTemplate, error) {
 	result := &jsonNamedTemplate{
 		argNames:         map[string]bool{},
 		tokens:           tokens{},
@@ -209,13 +219,13 @@ func (t *jsonNamedTemplate) NewWith(args map[string]interface{}) (JsonNamedTempl
 }
 
 // DefaultArgValue provides a default value for a specific named arg
-func (t *jsonNamedTemplate) DefaultArgValue(argName string, value interface{}) JsonNamedTemplate {
+func (t *jsonNamedTemplate) DefaultArgValue(argName string, value interface{}) NamedTemplate {
 	t.defaultArgValues[argName] = value
 	return t
 }
 
 // DefaultArgValues provides default values for the specified named args
-func (t *jsonNamedTemplate) DefaultArgValues(defaults map[string]interface{}) JsonNamedTemplate {
+func (t *jsonNamedTemplate) DefaultArgValues(defaults map[string]interface{}) NamedTemplate {
 	for k, v := range defaults {
 		t.defaultArgValues[k] = v
 	}
@@ -272,7 +282,7 @@ func (t *jsonNamedTemplate) parseAddArgToken(i int, data []byte) (int, error) {
 	t.parseAddFixedToken(i, data)
 	nameLen := scanForNameChars(i, data)
 	if nameLen == 0 {
-		return 0, fmt.Errorf("named token with no name at position %d", i)
+		return 0, fmt.Errorf("named token with no nameData at position %d", i)
 	}
 	argName := string(data[i+1 : i+1+nameLen])
 	t.tokens = append(t.tokens, jsonTemplateToken{
@@ -281,6 +291,19 @@ func (t *jsonNamedTemplate) parseAddArgToken(i int, data []byte) (int, error) {
 	t.argNames[argName] = true
 	t.lastTokenStart = i + 1 + nameLen
 	return nameLen, nil
+}
+
+func (t *jsonNamedTemplate) check() (err error) {
+	if t.checkReqd {
+		tArgs := map[string]interface{}{}
+		for k := range t.argNames {
+			tArgs[k] = nil
+		}
+		tData, _ := t.Data(tArgs)
+		var v interface{}
+		err = json.Unmarshal(tData, &v)
+	}
+	return
 }
 
 func scanForNameChars(i int, data []byte) int {

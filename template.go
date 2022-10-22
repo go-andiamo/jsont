@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// JsonTemplate is a JSON template with positional args
-type JsonTemplate interface {
+// Template is a JSON template with positional args
+type Template interface {
 	// String produces a JSON string from the template using the specified args
 	//
 	// The number of args must match args specified in the original template (otherwise an error is returned)
@@ -24,50 +24,74 @@ type JsonTemplate interface {
 	// ExpectedArgs returns the expected number of args (that String() and Data() expects)
 	ExpectedArgs() int
 	// NewWith creates a new template with the args supplied being resolved in the new template
-	NewWith(args ...interface{}) (JsonTemplate, error)
+	NewWith(args ...interface{}) (Template, error)
+	Options(options ...Option) Template
 }
 
 type jsonTemplate struct {
 	argsCount int
 	tokens    tokens
 	fixedLens int
+	strict    bool
+	checkReqd bool
 	// used only during parsing...
 	lastTokenStart int
 }
 
-// NewJsonTemplate creates a new JSON template from a template string
+// NewTemplate creates a new JSON template from a template string
 //
 // The template string can be any JSON with arg positions specified by '?'
 //
 // To escape a '?' in the template, use '??'
 //
 // Example:
-//   jt, _ := NewJsonTemplate(`{"foo":?,"bar":?,"baz":"??","qux":?}`)
+//   jt, _ := NewTemplate(`{"foo":?,"bar":?,"baz":"??","qux":?}`)
 //   println(jt.String("aaa", "bbb", 1.2))
 // would produce:
 //   {"foo":"aaa","bar":"bbb","baz":"?","qux":1.2}
-func NewJsonTemplate(template string) (JsonTemplate, error) {
+func NewTemplate(template string, options ...Option) (Template, error) {
 	result := &jsonTemplate{
 		tokens: make(tokens, 0),
+		strict: true,
 	}
 	result.parse(template)
-	// test it...
-	tArgs := make([]interface{}, result.argsCount)
-	tData, _ := result.Data(tArgs...)
-	var v interface{}
-	if err := json.Unmarshal(tData, &v); err != nil {
+	if err := result.applyOptions(options, false); err != nil {
+		return nil, err
+	}
+
+	if err := result.check(); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-// MustCompileJsonTemplate is the same as NewJsonTemplate, except it panics if there is an error
-func MustCompileJsonTemplate(template string) JsonTemplate {
-	if jt, err := NewJsonTemplate(template); err == nil {
+// MustCompileTemplate is the same as NewTemplate, except it panics if there is an error
+func MustCompileTemplate(template string, options ...Option) Template {
+	if jt, err := NewTemplate(template, options...); err == nil {
 		return jt
 	} else {
-		panic(err.Error())
+		panic(any(err))
 	}
+}
+
+// Options applies the specified options to the template
+//
+// Note: unlike using options with NewTemplate and MustCompileTemplate, this method
+// does not panic or error if any of the options are not applicable to this type
+func (t *jsonTemplate) Options(options ...Option) Template {
+	_ = t.applyOptions(options, true)
+	return t
+}
+
+func (t *jsonTemplate) applyOptions(options []Option, ignoreErrs bool) error {
+	for _, o := range options {
+		if o != nil {
+			if err := o.Apply(t); err != nil && !ignoreErrs {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // String produces a JSON string from the template using the specified args
@@ -76,18 +100,12 @@ func MustCompileJsonTemplate(template string) JsonTemplate {
 //
 // Each arg must be able to JSON Marshall
 func (t *jsonTemplate) String(args ...interface{}) (string, error) {
-	if len(args) != t.argsCount {
-		return "", fmt.Errorf("expected %d args but supplied %d args", t.argsCount, len(args))
+	if err := t.checkArgs(args); err != nil {
+		return "null", err
 	}
-	argsData := make([][]byte, t.argsCount)
-	argsLen := 0
-	for i, v := range args {
-		if ad, err := argValueToData(v); err == nil {
-			argsData[i] = ad
-			argsLen += len(ad)
-		} else {
-			return "", err
-		}
+	argsData, argsLen, err := t.getArgsData(args)
+	if err != nil {
+		return "null", err
 	}
 	var builder strings.Builder
 	builder.Grow(t.fixedLens + argsLen)
@@ -109,18 +127,12 @@ func (t *jsonTemplate) String(args ...interface{}) (string, error) {
 //
 // Each arg must be able to JSON Marshall
 func (t *jsonTemplate) Data(args ...interface{}) ([]byte, error) {
-	if len(args) != t.argsCount {
-		return nil, fmt.Errorf("expected %d args but supplied %d args", t.argsCount, len(args))
+	if err := t.checkArgs(args); err != nil {
+		return nil, err
 	}
-	argsData := make([][]byte, t.argsCount)
-	argsLen := 0
-	for i, v := range args {
-		if ad, err := argValueToData(v); err == nil {
-			argsData[i] = ad
-			argsLen += len(ad)
-		} else {
-			return nil, err
-		}
+	argsData, argsLen, err := t.getArgsData(args)
+	if err != nil {
+		return nil, err
 	}
 	var buffer bytes.Buffer
 	buffer.Grow(t.fixedLens + argsLen)
@@ -136,13 +148,40 @@ func (t *jsonTemplate) Data(args ...interface{}) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
+func (t *jsonTemplate) getArgsData(args []interface{}) (argsData [][]byte, argsLen int, err error) {
+	argsData = make([][]byte, t.argsCount)
+	argsLen = 0
+	l := len(args)
+	for i := 0; i < l; i++ {
+		if ad, e := argValueToData(args[i]); e == nil {
+			argsData[i] = ad
+			argsLen += len(ad)
+		} else {
+			err = e
+			break
+		}
+	}
+	for i := l; i < t.argsCount; i++ {
+		argsData[i] = nullData
+		argsLen += nullDataLen
+	}
+	return
+}
+
 // ExpectedArgs returns the expected number of args (that String() and Data() expects)
 func (t *jsonTemplate) ExpectedArgs() int {
 	return t.argsCount
 }
 
+func (t *jsonTemplate) checkArgs(args []interface{}) error {
+	if t.strict && len(args) != t.argsCount {
+		return fmt.Errorf("expected %d args but supplied %d args", t.argsCount, len(args))
+	}
+	return nil
+}
+
 // NewWith creates a new template with the args supplied being resolved in the new template
-func (t *jsonTemplate) NewWith(args ...interface{}) (JsonTemplate, error) {
+func (t *jsonTemplate) NewWith(args ...interface{}) (Template, error) {
 	lArgs := len(args)
 	if lArgs > t.argsCount {
 		return nil, fmt.Errorf("too many args supplied (%d) - expected maximum of %d", lArgs, t.argsCount)
@@ -151,6 +190,7 @@ func (t *jsonTemplate) NewWith(args ...interface{}) (JsonTemplate, error) {
 		argsCount: t.argsCount - len(args),
 		tokens:    tokens{},
 		fixedLens: t.fixedLens,
+		strict:    t.strict,
 	}
 	onArg := 0
 	for _, tkn := range t.tokens {
@@ -208,4 +248,14 @@ func (t *jsonTemplate) parseAddArgToken(i int, data []byte) {
 	t.tokens = append(t.tokens, jsonTemplateToken{})
 	t.lastTokenStart = i + 1
 	t.argsCount++
+}
+
+func (t *jsonTemplate) check() (err error) {
+	if t.checkReqd {
+		tArgs := make([]interface{}, t.argsCount)
+		tData, _ := t.Data(tArgs...)
+		var v interface{}
+		err = json.Unmarshal(tData, &v)
+	}
+	return
 }
