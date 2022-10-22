@@ -3,6 +3,7 @@ package jsont
 import (
 	"encoding/json"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -115,4 +116,105 @@ func TestArgValueToData(t *testing.T) {
 
 	_, err = argValueToData(func() {})
 	assert.NotNil(t, err)
+}
+
+func TestNameValue(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nv := NameValue("foo", true)
+
+	str, err := jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{"foo":true}`, str)
+
+	nv = NameValue("foo", nil).OmitEmpty()
+	str, err = jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{}`, str)
+}
+
+func TestNameValueMarshallError(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nv := NameValue("foo", true)
+	_, err = jt.String(nv)
+	require.NoError(t, err)
+	nv = NameValue("foo", func() {})
+	_, err = jt.String(nv)
+	require.Error(t, err)
+}
+
+func TestNameValueMarshallEmpty(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nv := NameValue("foo", nil).OmitEmpty()
+	str, err := jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{}`, str)
+}
+
+func TestNameValueFunc(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nv := NameValue("foo", func(name string) interface{} {
+		return "foo"
+	}).OmitEmpty()
+	str, err := jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{"foo":"foo"}`, str)
+
+	cntr := &counter{}
+	nv = NameValue("foo", cntr.getValue)
+	str, err = jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{"foo":1}`, str)
+	str, err = jt.String(nv)
+	require.NoError(t, err)
+	require.Equal(t, `{"foo":2}`, str)
+}
+
+type counter struct {
+	current int
+}
+
+func (c *counter) getValue(name string) interface{} {
+	c.current++
+	return c.current
+}
+
+func TestNameValues(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nvps := NameValues(NameValue("foo", nil), NameValue("bar", nil))
+	str, err := jt.String(nvps)
+	require.NoError(t, err)
+	require.Equal(t, `{"foo":null,"bar":null}`, str)
+
+	nvps = NameValues(NameValue("foo", nil).OmitEmpty(), NameValue("bar", nil).OmitEmpty())
+	str, err = jt.String(nvps)
+	require.NoError(t, err)
+	require.Equal(t, `{}`, str)
+}
+
+func TestNameValuesMarshallError(t *testing.T) {
+	jt, err := NewTemplate(`{?}`)
+	require.NoError(t, err)
+	require.NotNil(t, jt)
+
+	nvps := NameValues(NameValue("foo", true))
+	_, err = jt.String(nvps)
+	require.NoError(t, err)
+	nvps = NameValues(NameValue("foo", func() {}))
+	_, err = jt.String(nvps)
+	require.Error(t, err)
 }

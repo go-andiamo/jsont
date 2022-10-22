@@ -1,6 +1,13 @@
 package jsont
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
+
+var nullData = []byte{'n', 'u', 'l', 'l'}
+
+const nullDataLen = 4
 
 type jsonTemplateToken struct {
 	fixed      bool
@@ -40,10 +47,16 @@ func (t tokens) joinContiguousFixed() tokens {
 
 func argValueToData(v interface{}) ([]byte, error) {
 	switch vt := v.(type) {
+	case nil:
+		return nullData, nil
 	case []byte:
 		return vt, nil
 	case json.RawMessage:
 		return vt, nil
+	case *NameValuePair:
+		return vt.ToData()
+	case *NameValuePairs:
+		return vt.ToData()
 	default:
 		if jArg, err := json.Marshal(v); err == nil {
 			return jArg, nil
@@ -51,4 +64,71 @@ func argValueToData(v interface{}) ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+type NameValuePair struct {
+	name      string
+	nameData  []byte
+	value     interface{}
+	omitEmpty bool
+}
+
+func NameValue(name string, value interface{}) *NameValuePair {
+	return &NameValuePair{
+		name:     name,
+		nameData: []byte(`"` + name + `":`),
+		value:    value,
+	}
+}
+
+func (nvp *NameValuePair) OmitEmpty() *NameValuePair {
+	nvp.omitEmpty = true
+	return nvp
+}
+
+func (nvp *NameValuePair) ToData() ([]byte, error) {
+	useValue := nvp.value
+	if gdfn, ok := useValue.(func(string) interface{}); ok {
+		useValue = gdfn(nvp.name)
+	}
+	if nvp.omitEmpty && useValue == nil {
+		return make([]byte, 0, 0), nil
+	}
+	vData, err := argValueToData(useValue)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]byte, 0, len(nvp.nameData)+len(vData))
+	result = append(result, nvp.nameData...)
+	result = append(result, vData...)
+	return result, nil
+}
+
+type NameValuePairs struct {
+	pairs []*NameValuePair
+}
+
+func NameValues(pairs ...*NameValuePair) *NameValuePairs {
+	return &NameValuePairs{
+		pairs: pairs,
+	}
+}
+
+func (nvps *NameValuePairs) ToData() ([]byte, error) {
+	var buffer bytes.Buffer
+	added := false
+	for _, nvp := range nvps.pairs {
+		if nvp != nil {
+			if nvData, err := nvp.ToData(); err == nil && len(nvData) > 0 {
+				if added {
+					buffer.WriteByte(',')
+				}
+				buffer.Write(nvData)
+				added = true
+			} else if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return buffer.Bytes(), nil
 }
