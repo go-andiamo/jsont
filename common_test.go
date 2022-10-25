@@ -206,6 +206,17 @@ func TestNameValues(t *testing.T) {
 	require.Equal(t, `{}`, str)
 }
 
+func TestCheckedCapacity(t *testing.T) {
+	tot := checkedCapacity(1, 2)
+	require.Equal(t, 3, tot)
+
+	tot = checkedCapacity(9223372036854775807, 1)
+	require.Equal(t, 0, tot)
+
+	tot = checkedCapacity(9223372036854775807, 9223372036854775807)
+	require.Equal(t, 0, tot)
+}
+
 func TestNameValuesMarshallError(t *testing.T) {
 	jt, err := NewTemplate(`{?}`)
 	require.NoError(t, err)

@@ -86,22 +86,31 @@ func (nvp *NameValuePair) OmitEmpty() *NameValuePair {
 	return nvp
 }
 
-func (nvp *NameValuePair) ToData() ([]byte, error) {
+func (nvp *NameValuePair) ToData() (result []byte, err error) {
 	useValue := nvp.value
 	if gdfn, ok := useValue.(func(string) interface{}); ok {
 		useValue = gdfn(nvp.name)
 	}
 	if nvp.omitEmpty && useValue == nil {
-		return make([]byte, 0, 0), nil
+		return
 	}
 	vData, err := argValueToData(useValue)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]byte, 0, len(nvp.nameData)+len(vData))
+	capacity := checkedCapacity(len(nvp.nameData), len(vData))
+	result = make([]byte, 0, capacity)
 	result = append(result, nvp.nameData...)
 	result = append(result, vData...)
-	return result, nil
+	return
+}
+
+func checkedCapacity(sz1, sz2 int) int {
+	if tot := sz1 + sz2; tot < sz1 || tot < sz2 {
+		return 0
+	} else {
+		return tot
+	}
 }
 
 type NameValuePairs struct {
